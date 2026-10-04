@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solo-empire-ai-usage-api"
+version = "0.1.0"
+description = "Read-only local projection of Claude and Codex subscription usage"
+requires-python = ">=3.11"
+dependencies = ["solo-empire-service-auth>=0.1.0,<0.2"]
+
+[tool.setuptools]
+py-modules = ["server", "model", "collector"]
