@@ -1,0 +1,14 @@
+[Unit]
+Description=Solo Empire local Codex quota collector
+
+[Service]
+Type=simple
+WorkingDirectory=/home/bookchaowalit/solo-empire/projects/product/engineering/book-dev/github/bookchaowalit/private/solo-ai-usage
+Environment=PATH=/home/bookchaowalit/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /home/bookchaowalit/solo-empire/projects/product/engineering/book-dev/github/bookchaowalit/private/solo-ai-usage/collector.py codex --interval 300
+Restart=on-failure
+RestartSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target

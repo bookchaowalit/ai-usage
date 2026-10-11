@@ -5,7 +5,7 @@ port: 3520
 env_prefix: AI_USAGE_API_
 contract: contracts/ai-usage.v1.md
 health: /health
-dependencies: [packages/service-auth]
+dependencies: [vendor/service-auth]
 data:
   owner: solo-empire-ai-usage-local
   reads: ["private sanitized snapshots (AI_USAGE_STATE_DIR)"]

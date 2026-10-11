@@ -1,16 +1,33 @@
+# solo-ai-usage
+
+ย้ายจาก solo-empire `services/ai-usage-api` เมื่อ 2026-10-11 พร้อมประวัติ (subtree split).
+เป็น API + collector ที่รันในเครื่อง (local agent) อ่านโควตา Claude/Codex ให้ `solo-web`.
+`vendor/service-auth` คือสำเนาของ `bookchaowalit/solo-service-auth`.
+
+## systemd (user units) บนเครื่องนี้
+
+`~/.config/systemd/user/solo-ai-usage-api.service` และ `solo-ai-usage-collector.service` ชี้มาที่ checkout นี้
+(`.../private/solo-ai-usage`, `PYTHONPATH=<checkout>/vendor/service-auth`). ตัวอย่างใน `systemd/` ของ repo นี้.
+เปลี่ยนที่ตั้งแล้วให้รัน `systemctl --user daemon-reload && systemctl --user restart solo-ai-usage-api solo-ai-usage-collector`.
+Claude statusLine hook (`.claude/settings.local.json` ของ solo-empire) เรียก `<checkout>/collector.py claude-statusline`.
+
+Test: `PYTHONPATH=vendor/service-auth:. python3 -m pytest tests`
+
+---
+
 # Solo Empire AI Usage API
 
 `ai-usage-api` เป็น backend อ่านข้อมูลสำหรับหน้า AI Usage ใน
-[`solo-web`](../../projects/product/engineering/book-dev/github/bookchaowalit/private/solo-web/) แสดงโควตา Claude และ Codex,
+`solo-web` (`bookchaowalit/solo-web`) แสดงโควตา Claude และ Codex,
 เวลาที่รีเซ็ต, ค่าสมาชิกที่ผู้ใช้ตั้งไว้ และการแจ้งเตือนจากข้อมูลล่าสุด
 ดูรายละเอียดฟิลด์ใน [AI Usage v1 contract](contracts/ai-usage.v1.md)
 
 ## เริ่มใช้งานในเครื่อง
 
-รันจาก repository root ด้วย Python ที่มี `packages/service-auth` และ dependencies:
+รันจาก root ของ repo นี้ ด้วย Python ที่มี `vendor/service-auth` และ dependencies:
 
 ```bash
-PYTHONPATH=packages/service-auth .venv/bin/python services/ai-usage-api/server.py
+PYTHONPATH=vendor/service-auth .venv/bin/python server.py
 ```
 
 ค่าปกติคือ `http://127.0.0.1:3520` ปรับได้ด้วย `AI_USAGE_API_HOST`,
@@ -34,9 +51,9 @@ collector ใช้ข้อมูล `statusLine` ของ Claude Code แล�
 จัดการอยู่แล้ว และไม่เริ่มงาน AI เพื่อใช้โควตา
 
 ```bash
-.venv/bin/python services/ai-usage-api/collector.py codex
-.venv/bin/python services/ai-usage-api/collector.py codex --interval 300
-.venv/bin/python services/ai-usage-api/collector.py install-claude --settings-path "$PWD/.claude/settings.local.json" --passthrough-settings "$HOME/.claude/settings.json"
+.venv/bin/python collector.py codex
+.venv/bin/python collector.py codex --interval 300
+.venv/bin/python collector.py install-claude --settings-path "$PWD/.claude/settings.local.json" --passthrough-settings "$HOME/.claude/settings.json"
 ```
 
 คำสั่งแรกเก็บ Codex หนึ่งครั้ง คำสั่งที่สอง polling ทุก 5 นาที
@@ -58,7 +75,7 @@ services เริ่มเมื่อ user session เริ่มทำงา
 `AI_USAGE_CODEX_MONTHLY_FEE_USD` หรือบันทึกใน `settings.json` ส่วนตัวผ่าน collector:
 
 ```bash
-.venv/bin/python services/ai-usage-api/collector.py configure-fees --claude-fee "$CLAUDE_MONTHLY_FEE_USD" --codex-fee "$CODEX_MONTHLY_FEE_USD"
+.venv/bin/python collector.py configure-fees --claude-fee "$CLAUDE_MONTHLY_FEE_USD" --codex-fee "$CODEX_MONTHLY_FEE_USD"
 ```
 
 รูปแบบ settings คือ `{"monthly_fees_usd":{"claude":number,"codex":number}}`
@@ -90,7 +107,7 @@ backend ไม่ส่งการแจ้งเตือนออกภาย
 
 production และ listener ที่ไม่ใช่ loopback ต้องมี `AI_USAGE_API_AUTH_ISSUER`,
 `AI_USAGE_API_AUTH_PUBLIC_KEY` และ `AI_USAGE_API_AUTH_SUBJECTS` ตาม
-[`packages/service-auth`](../../packages/service-auth/README.md)
+[`vendor/service-auth`](vendor/service-auth/README.md)
 อ่านข้อมูลด้วย RS256 JWT ที่มี `aud=ai-usage-api`, `scope=ai-usage:read`,
 `tenant_id=owner` และ subject ที่อนุญาต อายุ token ไม่เกิน 120 วินาที
 production ไม่ยอมรับ `AI_USAGE_API_TOKEN`; JWT configuration ที่ไม่ครบจะปิดการอ่าน
@@ -104,8 +121,8 @@ HTTP response ใช้ `Cache-Control: no-store` และ CORS allowlist
 ## ทดสอบและ build
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/service-auth:services/ai-usage-api .venv/bin/python -m pytest services/ai-usage-api/tests
-docker build -f services/ai-usage-api/Dockerfile -t solo-empire/ai-usage-api .
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=vendor/service-auth:. python3 -m pytest tests
+docker build -t solo-ai-usage .
 ```
 
 image ไม่มี snapshot หรือ provider credentials ต้อง mount sanitized state แบบ read-only
