@@ -1,7 +1,7 @@
 # Solo Empire AI Usage API
 
 `ai-usage-api` เป็น backend อ่านข้อมูลสำหรับหน้า AI Usage ใน
-[`apps/solo-web`](../../apps/solo-web/) แสดงโควตา Claude และ Codex,
+[`solo-web`](../../projects/product/engineering/book-dev/github/bookchaowalit/private/solo-web/) แสดงโควตา Claude และ Codex,
 เวลาที่รีเซ็ต, ค่าสมาชิกที่ผู้ใช้ตั้งไว้ และการแจ้งเตือนจากข้อมูลล่าสุด
 ดูรายละเอียดฟิลด์ใน [AI Usage v1 contract](contracts/ai-usage.v1.md)
 
