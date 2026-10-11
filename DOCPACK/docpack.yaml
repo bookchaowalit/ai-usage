@@ -1,0 +1,8 @@
+system_id: bookchaowalit/private/solo-ai-usage
+prefix: CARD
+brand: "AI USAGE"
+subtitle: "API + collector ในเครื่องที่อ่านโควตา Claude/Codex ให้ solo-web"
+footer: "solo-ai-usage — Product Card"
+color: "#0b525b"
+audience: internal
+tier: L0
