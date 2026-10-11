@@ -2,10 +2,11 @@
 Description=Solo Empire local AI usage dashboard API
 
 [Service]
+# Replace /opt/solo-ai-usage with the path of this repository checkout.
 Type=simple
-WorkingDirectory=/home/bookchaowalit/solo-empire/projects/product/engineering/book-dev/github/bookchaowalit/private/solo-ai-usage
-Environment=PYTHONPATH=/home/bookchaowalit/solo-empire/projects/product/engineering/book-dev/github/bookchaowalit/private/solo-ai-usage/vendor/service-auth
-ExecStart=/usr/bin/python3 /home/bookchaowalit/solo-empire/projects/product/engineering/book-dev/github/bookchaowalit/private/solo-ai-usage/server.py --host 127.0.0.1 --port 3520
+WorkingDirectory=/opt/solo-ai-usage
+Environment=PYTHONPATH=/opt/solo-ai-usage/vendor/service-auth
+ExecStart=/usr/bin/python3 /opt/solo-ai-usage/server.py --host 127.0.0.1 --port 3520
 Restart=on-failure
 RestartSec=5
 UMask=0077
