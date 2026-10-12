@@ -1,13 +1,13 @@
-# solo-ai-usage
+# ai-usage
 
 ย้ายจาก solo-empire `services/ai-usage-api` เมื่อ 2026-10-11 พร้อมประวัติ (subtree split).
-เป็น API + collector ที่รันในเครื่อง (local agent) อ่านโควตา Claude/Codex ให้ `solo-web`.
-`vendor/service-auth` คือสำเนาของ `bookchaowalit/solo-service-auth`.
+เป็น API + collector ที่รันในเครื่อง (local agent) อ่านโควตา Claude/Codex ให้ `owner-web`.
+`vendor/service-auth` คือสำเนาของ `bookchaowalit/service-auth`.
 
 ## systemd (user units) บนเครื่องนี้
 
 `~/.config/systemd/user/solo-ai-usage-api.service` และ `solo-ai-usage-collector.service` ชี้มาที่ checkout นี้
-(`.../private/solo-ai-usage`, `PYTHONPATH=<checkout>/vendor/service-auth`). ตัวอย่างใน `systemd/` ของ repo นี้ (แก้ `/opt/solo-ai-usage` เป็น path ของ checkout).
+(`.../private/ai-usage`, `PYTHONPATH=<checkout>/vendor/service-auth`). ตัวอย่างใน `systemd/` ของ repo นี้ (แก้ `/opt/solo-ai-usage` เป็น path ของ checkout).
 เปลี่ยนที่ตั้งแล้วให้รัน `systemctl --user daemon-reload && systemctl --user restart solo-ai-usage-api solo-ai-usage-collector`.
 Claude statusLine hook (`.claude/settings.local.json` ของ solo-empire) เรียก `<checkout>/collector.py claude-statusline`.
 
@@ -18,7 +18,7 @@ Test: `PYTHONPATH=vendor/service-auth:. python3 -m pytest tests`
 # Solo Empire AI Usage API
 
 `ai-usage-api` เป็น backend อ่านข้อมูลสำหรับหน้า AI Usage ใน
-`solo-web` (`bookchaowalit/solo-web`) แสดงโควตา Claude และ Codex,
+`owner-web` (`bookchaowalit/owner-web`) แสดงโควตา Claude และ Codex,
 เวลาที่รีเซ็ต, ค่าสมาชิกที่ผู้ใช้ตั้งไว้ และการแจ้งเตือนจากข้อมูลล่าสุด
 ดูรายละเอียดฟิลด์ใน [AI Usage v1 contract](contracts/ai-usage.v1.md)
 
