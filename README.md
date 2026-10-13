@@ -2,7 +2,7 @@
 
 ย้ายจาก solo-empire `services/ai-usage-api` เมื่อ 2026-10-11 พร้อมประวัติ (subtree split).
 เป็น API + collector ที่รันในเครื่อง (local agent) อ่านโควตา Claude/Codex ให้ `owner-web`.
-`vendor/service-auth` คือสำเนาของ `bookchaowalit/service-auth`.
+`vendor/service-auth` คือสำเนาของ `bookchaowalit/platform-auth-sdk`.
 
 ## systemd (user units) บนเครื่องนี้
 
@@ -18,7 +18,7 @@ Test: `PYTHONPATH=vendor/service-auth:. python3 -m pytest tests`
 # Solo Empire AI Usage API
 
 `ai-usage-api` เป็น backend อ่านข้อมูลสำหรับหน้า AI Usage ใน
-`owner-web` (`bookchaowalit/owner-web`) แสดงโควตา Claude และ Codex,
+`owner-web` (`bookchaowalit/life-dashboard-web`) แสดงโควตา Claude และ Codex,
 เวลาที่รีเซ็ต, ค่าสมาชิกที่ผู้ใช้ตั้งไว้ และการแจ้งเตือนจากข้อมูลล่าสุด
 ดูรายละเอียดฟิลด์ใน [AI Usage v1 contract](contracts/ai-usage.v1.md)
 
