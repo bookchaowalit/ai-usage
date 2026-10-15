@@ -87,6 +87,21 @@ services เริ่มเมื่อ user session เริ่มทำงา
 ส่วน `api_billed_cost_usd` เป็น `null` เสมอ เพราะยังไม่มีการเชื่อมข้อมูล invoice/API billing
 การใช้งาน subscription ไม่ใช่การเรียกเก็บเงิน API และยังไม่วัดมูลค่างานหรือเวลาที่ประหยัด
 
+## ค่า AI คุ้มไหม (ROI รายเดือน)
+
+`subscriptions` แสดงค่าสมาชิก AI ทั้ง 5 เจ้า (Claude, Codex, Gemini, Grok, Muse) เป็นบาท
+และ `roi` ตอบว่ากำไรธุรกิจก่อนหักค่า AI ≥ 3 เท่าของค่า AI หรือไม่ และค่า AI อยู่ในช่วง 5–10% ของรายได้หรือไม่
+Gemini, Grok, Muse ยังไม่มี quota collector จึงเป็น cost-only ตัวเลขทั้งหมดผู้ใช้กรอกเอง ไม่อนุมานราคา:
+
+```bash
+.venv/bin/python collector.py configure-subscription --provider gemini --fee-thb "$GEMINI_FEE_THB" --plan "AI Pro" --active-days 20
+.venv/bin/python collector.py configure-business --month 2026-10 --revenue-thb "$REVENUE_THB" --profit-before-ai-thb "$PROFIT_THB"
+```
+
+ทุกคำสั่ง `configure-*` merge เข้า `settings.json` โดยไม่ลบ section อื่น
+เจ้าที่จ่ายเงินแต่แทบไม่ได้ใช้ (quota สัปดาห์ < 5% หลังผ่านครึ่งรอบ หรือใช้ ≤ 2 วันใน 30 วัน)
+ถูก flag `consider_pausing` รายละเอียดฟิลด์อยู่ใน [contract](contracts/ai-usage.v1.md)
+
 ## ความสดของข้อมูลและการแจ้งเตือน
 
 snapshot เก่ากว่า 15 นาทีมีสถานะ `stale` และไม่สร้าง alert ใหม่

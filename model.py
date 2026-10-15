@@ -1,10 +1,11 @@
-"""Bounded, non-secret projection of local Claude and Codex usage snapshots."""
+"""Bounded, non-secret projection of local AI usage snapshots and subscription ROI."""
 
 from __future__ import annotations
 
 import json
 import math
 import os
+import re
 import stat
 from collections import Counter
 from datetime import datetime, timezone
@@ -26,6 +27,15 @@ WINDOW_LABELS = {
     "primary": "รอบหลัก", "secondary": "รอบรอง",
 }
 PROVIDER_WINDOWS = {"claude": {"five_hour", "seven_day"}, "codex": {"primary", "secondary"}}
+# Every paid AI; only PROVIDERS have a quota collector, the rest are cost-only.
+SUBSCRIPTIONS = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini", "grok": "Grok", "muse": "Muse"}
+PLAN_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 +.\-]{0,39}")
+MONTH_TEXT = re.compile(r"20[0-9]{2}-(0[1-9]|1[0-2])")
+MAX_AMOUNT_THB = 1e12
+TARGET_PROFIT_RATIO = 3
+BUDGET_BAND_PERCENT = (5, 10)
+NEAR_ZERO_USED_PERCENT = 5
+NEAR_ZERO_ACTIVE_DAYS = 2
 
 
 def utc_iso(value: datetime) -> str:
@@ -63,6 +73,22 @@ def monthly_fee(environ: Mapping[str, str], provider: str, settings: Mapping[str
     raw = environ[key]
     try:
         return nonnegative_number(float(raw)) if raw is not None else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def thb_amount(value: Any, *, signed: bool = False) -> float | None:
+    if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > MAX_AMOUNT_THB:
+        return None
+    return float(value) if signed or value >= 0 else None
+
+
+def env_or_setting(environ: Mapping[str, str], key: str, setting: Any, *, signed: bool = False) -> float | None:
+    """Environment overrides settings, even when the override is invalid (then unknown)."""
+    if key not in environ:
+        return thb_amount(setting, signed=signed)
+    try:
+        return thb_amount(float(environ[key]), signed=signed)
     except (ValueError, TypeError, OverflowError):
         return None
 
@@ -224,6 +250,91 @@ def project_provider(provider: str, raw: Mapping[str, Any], now: datetime, fee: 
     return result
 
 
+def quota_usage(row: Mapping[str, Any] | None, now: datetime) -> tuple[str, float | None]:
+    """Near zero only when a fresh weekly-or-longer window is at least half elapsed."""
+    if row is None or row["status"] != "ready":
+        return "unknown", None
+    windows = [w for w in row["windows"] if w["status"] == "active" and w["used_percent"] is not None]
+    longest = max(windows, key=lambda w: (w["window_minutes"] or (10080 if w["id"] == "seven_day" else 0)), default=None)
+    if longest is None:
+        return "unknown", None
+    used = longest["used_percent"]
+    minutes = longest["window_minutes"] or (10080 if longest["id"] == "seven_day" else None)
+    reset = parse_timestamp(longest["resets_at"])
+    if used >= NEAR_ZERO_USED_PERCENT:
+        return "active", used
+    if minutes is None or minutes < 10080 or reset is None:
+        return "unknown", used
+    elapsed = minutes * 60 - (reset - now).total_seconds()
+    return ("near_zero" if elapsed >= minutes * 30 else "unknown"), used
+
+
+def project_subscription(provider: str, raw: Any, environ: Mapping[str, str],
+                         quota_row: Mapping[str, Any] | None, now: datetime) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    plan = raw.get("plan")
+    plan = plan if isinstance(plan, str) and PLAN_TEXT.fullmatch(plan) else None
+    if quota_row is not None and quota_row["plan"] is not None:
+        plan = quota_row["plan"]
+    fee = env_or_setting(environ, f"AI_USAGE_{provider.upper()}_MONTHLY_FEE_THB", raw.get("monthly_fee_thb"))
+    days = raw.get("active_days_30d")
+    days = days if type(days) is int and 0 <= days <= 30 else None
+    level, used = quota_usage(quota_row, now)
+    signal = "quota" if level != "unknown" else "unknown"
+    if signal == "unknown" and days is not None:
+        signal, level = "self_reported", ("near_zero" if days <= NEAR_ZERO_ACTIVE_DAYS else "active")
+    pause = fee is not None and fee > 0 and level == "near_zero"
+    return {
+        "id": provider, "name": SUBSCRIPTIONS[provider], "plan": plan, "monthly_fee_thb": fee,
+        "has_quota_collector": provider in PROVIDERS,
+        "usage": {"signal": signal, "level": level, "used_percent": used if signal == "quota" else None,
+                  "active_days_30d": days},
+        "consider_pausing": pause,
+    }
+
+
+def project_roi(subscriptions: list[dict[str, Any]], business: Any, environ: Mapping[str, str]) -> dict[str, Any]:
+    business = business if isinstance(business, dict) else {}
+    month = business.get("month")
+    month = month if isinstance(month, str) and MONTH_TEXT.fullmatch(month) else None
+    revenue = env_or_setting(environ, "AI_USAGE_MONTHLY_REVENUE_THB", business.get("monthly_revenue_thb"))
+    profit = env_or_setting(environ, "AI_USAGE_MONTHLY_PROFIT_BEFORE_AI_THB",
+                            business.get("monthly_profit_before_ai_thb"), signed=True)
+    missing = [row["id"] for row in subscriptions if row["monthly_fee_thb"] is None]
+    spend = None if missing else sum(row["monthly_fee_thb"] for row in subscriptions)
+    ratio = round(profit / spend, 4) if spend and profit is not None else None
+    ratio_status = "unknown" if ratio is None else ("meets_target" if ratio >= TARGET_PROFIT_RATIO else "below_target")
+    percent = round(spend / revenue * 100, 4) if spend is not None and revenue else None
+    low, high = BUDGET_BAND_PERCENT
+    budget_status = "unknown" if percent is None else (
+        "under_band" if percent < low else "over_band" if percent > high else "within_band")
+    pausing = [row["id"] for row in subscriptions if row["consider_pausing"]]
+    if missing:
+        verdict, message = "incomplete", "ยังไม่ครบ: ใส่ค่าสมาชิกรายเดือน (บาท) ของ " + ", ".join(
+            SUBSCRIPTIONS[item] for item in missing)
+    elif profit is None:
+        verdict, message = "incomplete", "ใส่กำไรธุรกิจรายเดือนก่อนหักค่า AI เพื่อคำนวณความคุ้มค่า"
+    elif spend == 0:
+        verdict, message = "no_spend", "ยังไม่มีค่าใช้จ่าย AI รายเดือน"
+    elif ratio_status == "meets_target":
+        verdict, message = "paying_for_itself", f"กำไร {ratio:g} เท่าของค่า AI ผ่านเป้า {TARGET_PROFIT_RATIO} เท่า"
+    else:
+        verdict, message = "not_paying_for_itself", (
+            f"กำไรเพียง {ratio:g} เท่าของค่า AI ต่ำกว่าเป้า {TARGET_PROFIT_RATIO} เท่า พิจารณาลดแพ็กเกจที่ใช้น้อย")
+    return {
+        "currency": "THB", "month": month, "ai_spend_thb": spend, "spend_complete": not missing,
+        "missing_fees": missing, "revenue_thb": revenue, "profit_before_ai_thb": profit,
+        "profit_to_ai_ratio": ratio, "target_ratio": TARGET_PROFIT_RATIO, "ratio_status": ratio_status,
+        "max_ai_spend_by_ratio_thb": round(profit / TARGET_PROFIT_RATIO, 2) if profit is not None and profit > 0 else (
+            0.0 if profit is not None else None),
+        "ai_spend_percent_of_revenue": percent,
+        "budget_band_percent": {"min": low, "max": high},
+        "budget_band_thb": ({"min": round(revenue * low / 100, 2), "max": round(revenue * high / 100, 2)}
+                            if revenue is not None else None),
+        "budget_status": budget_status, "consider_pausing": pausing, "verdict": verdict, "message": message,
+    }
+
+
 class UsageStore:
     """Read sanitized local snapshots only; no provider APIs or canonical writes."""
 
@@ -247,6 +358,11 @@ class UsageStore:
                 providers.append(empty_provider(provider, fee))
             except (OSError, ValueError, TypeError, RecursionError):
                 providers.append(empty_provider(provider, fee, "error"))
+        quota_rows = {row["id"]: row for row in providers}
+        configured = settings.get("subscriptions")
+        configured = configured if isinstance(configured, dict) else {}
+        subscriptions = [project_subscription(provider, configured.get(provider), self.environ,
+                                              quota_rows.get(provider), now) for provider in SUBSCRIPTIONS]
         fees_complete = all(row["monthly_fee_usd"] is not None for row in providers)
         total_fee = sum(row["monthly_fee_usd"] for row in providers) if fees_complete else None
         if total_fee is not None and not math.isfinite(total_fee):
@@ -257,4 +373,6 @@ class UsageStore:
                 "connected": sum(row["status"] in {"ready", "stale"} for row in providers),
                 "monthly_fee_usd": total_fee, "fees_complete": fees_complete,
             },
+            "subscriptions": subscriptions,
+            "roi": project_roi(subscriptions, settings.get("business"), self.environ),
         }

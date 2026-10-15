@@ -153,3 +153,24 @@ for line in sys.stdin:
     with pytest.raises(collector.CollectionError) as error:
         collector.read_codex(binary, timeout=3)
     assert str(error.value) == "codex_usage_unavailable"
+
+
+def test_configure_commands_merge_settings_sections(tmp_path, monkeypatch):
+    def run(*argv):
+        monkeypatch.setattr(sys, "argv", ["collector.py", *argv, "--state-dir", str(tmp_path)])
+        return collector.main()
+
+    assert run("configure-business", "--revenue-thb", "80000", "--profit-before-ai-thb", "-500", "--month", "2026-10") == 0
+    assert run("configure-subscription", "--provider", "gemini", "--fee-thb", "700", "--plan", "AI Pro") == 0
+    assert run("configure-subscription", "--provider", "gemini", "--active-days", "3") == 0
+    assert run("configure-fees", "--claude-fee", "100", "--codex-fee", "20") == 0
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    assert settings == {
+        "business": {"monthly_revenue_thb": 80000, "monthly_profit_before_ai_thb": -500, "month": "2026-10"},
+        "subscriptions": {"gemini": {"monthly_fee_thb": 700, "plan": "AI Pro", "active_days_30d": 3}},
+        "monthly_fees_usd": {"claude": 100, "codex": 20},
+    }
+    with pytest.raises(SystemExit):
+        run("configure-subscription", "--provider", "grok", "--fee-thb", "-1")
+    (tmp_path / "settings.json").write_text("[]")
+    assert run("configure-subscription", "--provider", "grok", "--fee-thb", "1") == 1

@@ -120,6 +120,39 @@ def atomic_json(target: Path, payload: dict) -> None:
             os.unlink(name)
 
 
+SUBSCRIPTION_IDS = ("claude", "codex", "gemini", "grok", "muse")
+
+
+def read_settings(target: Path) -> dict:
+    """Keep other user settings when one section changes; never follow a symlink."""
+    if target.is_symlink():
+        raise CollectionError("unsafe_state_path")
+    try:
+        if not target.exists():
+            return {}
+        if target.stat().st_size > MAX_BYTES:
+            raise CollectionError("settings_too_large")
+        settings = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise CollectionError("invalid_settings") from None
+    if not isinstance(settings, dict):
+        raise CollectionError("invalid_settings")
+    return settings
+
+
+def update_settings(target: Path, section: str, key: str | None, values: dict) -> None:
+    settings = read_settings(target)
+    current = settings.get(section) if isinstance(settings.get(section), dict) else {}
+    if key is None:
+        current.update(values)
+    else:
+        row = current.get(key) if isinstance(current.get(key), dict) else {}
+        row.update(values)
+        current[key] = row
+    settings[section] = current
+    atomic_json(target, settings)
+
+
 def rpc_result(process: subprocess.Popen, request_id: int, deadline: float) -> dict:
     total = 0
     buffer = b""
@@ -255,7 +288,8 @@ def install_claude(settings_path: Path, fallback_path: Path | None) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("codex", "claude-statusline", "install-claude", "configure-fees"))
+    parser.add_argument("command", choices=("codex", "claude-statusline", "install-claude", "configure-fees",
+                                                "configure-subscription", "configure-business"))
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--interval", type=int, default=0, help="Codex poll interval, minimum 60 seconds")
     parser.add_argument("--passthrough", help="Preserve a pre-existing Claude statusLine command")
@@ -263,13 +297,69 @@ def main() -> int:
     parser.add_argument("--settings-path", type=Path, help="Claude project-local settings path")
     parser.add_argument("--claude-fee", type=float)
     parser.add_argument("--codex-fee", type=float)
+    parser.add_argument("--provider", choices=SUBSCRIPTION_IDS, help="configure-subscription target")
+    parser.add_argument("--fee-thb", type=float, help="Monthly subscription fee in THB")
+    parser.add_argument("--plan", help="Plan label, letters/digits/space/+.- up to 40 characters")
+    parser.add_argument("--active-days", type=int, help="Days used in the last 30 (self-reported)")
+    parser.add_argument("--month", help="Business month YYYY-MM")
+    parser.add_argument("--revenue-thb", type=float)
+    parser.add_argument("--profit-before-ai-thb", type=float)
     args = parser.parse_args()
     directory = args.state_dir or state_dir()
     if args.command == "configure-fees":
         if number(args.claude_fee) is None or number(args.codex_fee) is None:
             parser.error("both monthly USD fees must be finite nonnegative numbers")
-        atomic_json(directory / "settings.json", {"monthly_fees_usd": {"claude": args.claude_fee, "codex": args.codex_fee}})
+        try:
+            update_settings(directory / "settings.json", "monthly_fees_usd", None,
+                            {"claude": args.claude_fee, "codex": args.codex_fee})
+        except CollectionError as error:
+            print(str(error), file=sys.stderr)
+            return 1
         print("monthly_fees_configured")
+        return 0
+    if args.command == "configure-subscription":
+        values: dict[str, Any] = {}
+        if args.provider is None:
+            parser.error("--provider is required")
+        if args.fee_thb is not None:
+            if number(args.fee_thb, 1e12) is None:
+                parser.error("--fee-thb must be a finite nonnegative number")
+            values["monthly_fee_thb"] = args.fee_thb
+        if args.plan is not None:
+            values["plan"] = args.plan
+        if args.active_days is not None:
+            if not 0 <= args.active_days <= 30:
+                parser.error("--active-days must be 0..30")
+            values["active_days_30d"] = args.active_days
+        if not values:
+            parser.error("set at least one of --fee-thb, --plan, --active-days")
+        try:
+            update_settings(directory / "settings.json", "subscriptions", args.provider, values)
+        except CollectionError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        print("subscription_configured")
+        return 0
+    if args.command == "configure-business":
+        values = {}
+        if args.revenue_thb is not None:
+            if number(args.revenue_thb, 1e12) is None:
+                parser.error("--revenue-thb must be a finite nonnegative number")
+            values["monthly_revenue_thb"] = args.revenue_thb
+        if args.profit_before_ai_thb is not None:
+            if not math.isfinite(args.profit_before_ai_thb) or abs(args.profit_before_ai_thb) > 1e12:
+                parser.error("--profit-before-ai-thb must be a finite number")
+            values["monthly_profit_before_ai_thb"] = args.profit_before_ai_thb
+        if args.month is not None:
+            values["month"] = args.month
+        if not values:
+            parser.error("set at least one of --revenue-thb, --profit-before-ai-thb, --month")
+        try:
+            update_settings(directory / "settings.json", "business", None, values)
+        except CollectionError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        print("business_configured")
         return 0
     if args.command == "install-claude":
         if args.settings_path is None:

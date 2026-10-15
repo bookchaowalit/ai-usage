@@ -297,3 +297,130 @@ class UsageModelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def weekly_snapshot(provider="claude", used=2, reset_hours=24):
+    raw = snapshot(provider)
+    raw["windows"] = [{"id": "seven_day" if provider == "claude" else "secondary", "used_percent": used,
+                       "resets_at": utc_iso(NOW + timedelta(hours=reset_hours)), "window_minutes": 10080}]
+    return raw
+
+
+class SubscriptionRoiTest(unittest.TestCase):
+    FEES = {"claude": 3500, "codex": 700, "gemini": 700, "grok": 1000, "muse": 300}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name)
+        self.store = UsageStore(self.path, environ={})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def save(self, raw, name="settings"):
+        (self.path / (name + ".json")).write_text(json.dumps(raw), encoding="utf-8")
+
+    def settings(self, profit=24000, revenue=80000, **extra):
+        subs = {key: {"monthly_fee_thb": fee} for key, fee in self.FEES.items()}
+        for key, values in extra.items():
+            subs[key].update(values)
+        return {"subscriptions": subs, "business": {
+            "month": "2026-10", "monthly_revenue_thb": revenue, "monthly_profit_before_ai_thb": profit}}
+
+    def test_v1_providers_unchanged_and_all_five_subscriptions_listed(self):
+        result = self.store.snapshot(now=NOW)
+        self.assertEqual([row["id"] for row in result["providers"]], ["claude", "codex"])
+        self.assertEqual([row["id"] for row in result["subscriptions"]], ["claude", "codex", "gemini", "grok", "muse"])
+        self.assertEqual([row["has_quota_collector"] for row in result["subscriptions"]], [True, True, False, False, False])
+        roi = result["roi"]
+        self.assertEqual(roi["verdict"], "incomplete")
+        self.assertIsNone(roi["ai_spend_thb"])
+        self.assertEqual(roi["missing_fees"], ["claude", "codex", "gemini", "grok", "muse"])
+        self.assertEqual((roi["ratio_status"], roi["budget_status"]), ("unknown", "unknown"))
+
+    def test_ratio_and_budget_band(self):
+        self.save(self.settings())
+        roi = self.store.snapshot(now=NOW)["roi"]
+        self.assertEqual(roi["ai_spend_thb"], 6200)
+        self.assertEqual(roi["profit_to_ai_ratio"], round(24000 / 6200, 4))
+        self.assertEqual((roi["ratio_status"], roi["verdict"]), ("meets_target", "paying_for_itself"))
+        self.assertEqual(roi["ai_spend_percent_of_revenue"], 7.75)
+        self.assertEqual(roi["budget_status"], "within_band")
+        self.assertEqual(roi["budget_band_thb"], {"min": 4000, "max": 8000})
+        self.assertEqual(roi["max_ai_spend_by_ratio_thb"], 8000)
+        self.assertEqual(roi["month"], "2026-10")
+        for profit, revenue, ratio_status, budget in (
+            (18000, 200000, "below_target", "under_band"), (18600, 50000, "meets_target", "over_band"),
+            (-5000, 62000, "below_target", "within_band"),
+        ):
+            self.save(self.settings(profit=profit, revenue=revenue))
+            roi = self.store.snapshot(now=NOW)["roi"]
+            self.assertEqual((roi["ratio_status"], roi["budget_status"]), (ratio_status, budget), (profit, revenue))
+        self.assertEqual(roi["verdict"], "not_paying_for_itself")
+        self.assertEqual(roi["max_ai_spend_by_ratio_thb"], 0)
+
+    def test_missing_fee_or_profit_never_produces_a_ratio(self):
+        raw = self.settings()
+        del raw["subscriptions"]["grok"]["monthly_fee_thb"]
+        self.save(raw)
+        roi = self.store.snapshot(now=NOW)["roi"]
+        self.assertEqual((roi["missing_fees"], roi["ai_spend_thb"], roi["profit_to_ai_ratio"]), (["grok"], None, None))
+        self.assertIn("Grok", roi["message"])
+        raw = self.settings(profit=None)
+        self.save(raw)
+        roi = self.store.snapshot(now=NOW)["roi"]
+        self.assertEqual((roi["verdict"], roi["profit_to_ai_ratio"]), ("incomplete", None))
+        self.assertEqual(roi["ai_spend_thb"], 6200)
+
+    def test_env_overrides_and_invalid_values_are_unknown(self):
+        self.save(self.settings())
+        self.store.environ = {"AI_USAGE_GROK_MONTHLY_FEE_THB": "0", "AI_USAGE_MONTHLY_PROFIT_BEFORE_AI_THB": "-100"}
+        roi = self.store.snapshot(now=NOW)["roi"]
+        self.assertEqual((roi["ai_spend_thb"], roi["profit_before_ai_thb"]), (5200, -100))
+        for bad in ("", "nan", "inf", "-1", "1e13"):
+            self.store.environ = {"AI_USAGE_MUSE_MONTHLY_FEE_THB": bad}
+            self.assertEqual(self.store.snapshot(now=NOW)["roi"]["missing_fees"], ["muse"], bad)
+        self.store.environ = {}
+        raw = self.settings(revenue=-1)
+        raw["subscriptions"]["gemini"].update(monthly_fee_thb=True, plan="<script>")
+        raw["business"]["month"] = "2026-13"
+        self.save(raw)
+        result = self.store.snapshot(now=NOW)
+        gemini = result["subscriptions"][2]
+        self.assertEqual((gemini["monthly_fee_thb"], gemini["plan"]), (None, None))
+        self.assertEqual((result["roi"]["revenue_thb"], result["roi"]["month"]), (None, None))
+
+    def test_plan_prefers_collected_quota_plan(self):
+        self.save(self.settings(claude={"plan": "Max 20x"}, gemini={"plan": "AI Pro"}))
+        subs = {row["id"]: row for row in self.store.snapshot(now=NOW)["subscriptions"]}
+        self.assertEqual((subs["claude"]["plan"], subs["gemini"]["plan"]), ("Max 20x", "AI Pro"))
+        self.save(snapshot(), "claude")
+        subs = {row["id"]: row for row in self.store.snapshot(now=NOW)["subscriptions"]}
+        self.assertEqual(subs["claude"]["plan"], "Pro")
+
+    def test_near_zero_usage_flags_consider_pausing(self):
+        self.save(self.settings(gemini={"active_days_30d": 1}, grok={"active_days_30d": 12},
+                                muse={"active_days_30d": 0, "monthly_fee_thb": 0}))
+        self.save(weekly_snapshot("claude", used=2, reset_hours=24), "claude")
+        self.save(weekly_snapshot("codex", used=2, reset_hours=150), "codex")
+        result = self.store.snapshot(now=NOW)
+        subs = {row["id"]: row for row in result["subscriptions"]}
+        self.assertEqual(subs["claude"]["usage"], {"signal": "quota", "level": "near_zero", "used_percent": 2,
+                                                   "active_days_30d": None})
+        # Codex weekly window only just reset: too early to call it idle.
+        self.assertEqual(subs["codex"]["usage"]["level"], "unknown")
+        self.assertEqual(subs["gemini"]["usage"]["signal"], "self_reported")
+        self.assertEqual(subs["grok"]["usage"]["level"], "active")
+        self.assertFalse(subs["muse"]["consider_pausing"])  # nothing paid, nothing to pause
+        self.assertEqual(result["roi"]["consider_pausing"], ["claude", "gemini"])
+
+    def test_measured_quota_beats_self_report_and_stale_is_unknown(self):
+        self.save(self.settings(claude={"active_days_30d": 0}))
+        self.save(weekly_snapshot("claude", used=40), "claude")
+        claude = self.store.snapshot(now=NOW)["subscriptions"][0]
+        self.assertEqual((claude["usage"]["signal"], claude["usage"]["level"]), ("quota", "active"))
+        stale = weekly_snapshot("claude", used=1)
+        stale["collected_at"] = utc_iso(NOW - timedelta(hours=1))
+        self.save(stale, "claude")
+        claude = self.store.snapshot(now=NOW)["subscriptions"][0]
+        self.assertEqual((claude["usage"]["signal"], claude["usage"]["level"]), ("self_reported", "near_zero"))
