@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +33,7 @@ class CollectionError(Exception):
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def state_dir() -> Path:
@@ -73,7 +73,7 @@ def window(
         "label": label,
         "used_percent": percent,
         "remaining_percent": round(100 - percent, 4),
-        "resets_at": datetime.fromtimestamp(reset, timezone.utc)
+        "resets_at": datetime.fromtimestamp(reset, UTC)
         .isoformat()
         .replace("+00:00", "Z"),
         "window_minutes": duration,
@@ -428,7 +428,7 @@ def parse_iso(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     return parsed if parsed.tzinfo else None
@@ -558,11 +558,7 @@ def main() -> int:
             provider: read_snapshot(directory / f"{provider}.json")
             for provider in ("claude", "codex")
         }
-        print(
-            render_status(
-                snapshots, datetime.now(timezone.utc), color=sys.stdout.isatty()
-            )
-        )
+        print(render_status(snapshots, datetime.now(UTC), color=sys.stdout.isatty()))
         return 0
     if args.command == "configure-fees":
         if number(args.claude_fee) is None or number(args.codex_fee) is None:

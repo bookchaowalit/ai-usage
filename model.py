@@ -8,9 +8,10 @@ import os
 import re
 import stat
 from collections import Counter
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 SCHEMA_VERSION = "solo-empire.ai-usage.v1"
 SNAPSHOT_SCHEMA_VERSION = "solo-empire.ai-usage.snapshot.v1"
@@ -65,10 +66,7 @@ NEAR_ZERO_ACTIVE_DAYS = 2
 
 def utc_iso(value: datetime) -> str:
     return (
-        value.astimezone(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
+        value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
 
 
@@ -76,8 +74,8 @@ def parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or len(value) > 40:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+        parsed = datetime.fromisoformat(value)
+        return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
     except (ValueError, OverflowError):
         return None
 
@@ -196,7 +194,7 @@ def read_snapshot(state_dir: Path, provider: str) -> dict[str, Any] | None:
                 raise ValueError("snapshot too large")
         raw = json.loads(encoded, object_pairs_hook=_unique_object)
         if not isinstance(raw, dict):
-            raise ValueError("invalid snapshot object")
+            raise ValueError("invalid snapshot object")  # noqa: TRY004 - read_snapshot reports every malformed snapshot as ValueError
         return raw
     finally:
         os.close(directory)
@@ -560,7 +558,7 @@ class UsageStore:
         self.environ = os.environ if environ is None else environ
 
     def snapshot(self, *, now: datetime | None = None) -> dict[str, Any]:
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         try:
             settings = read_snapshot(self.state_dir, "settings") or {}
         except (OSError, ValueError, TypeError, RecursionError):

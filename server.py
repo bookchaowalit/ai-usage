@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlsplit
 
 from service_auth import AuthError, AuthPolicy, check_read_auth, is_loopback, readiness
@@ -80,7 +81,7 @@ class AiUsageApi:
                         "status": "ok",
                         "service": SERVICE_NAME,
                         "schema_version": SCHEMA_VERSION,
-                        "timestamp": utc_iso(datetime.now(timezone.utc)),
+                        "timestamp": utc_iso(datetime.now(UTC)),
                     },
                 )
             if method == "GET" and path == "/ready":
@@ -113,7 +114,7 @@ class AiUsageApi:
             return Response(
                 exc.status, {"error": {"code": exc.code, "message": exc.message}}
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - never leak exception text; answer a generic 500
             return Response(
                 500,
                 {
@@ -128,7 +129,7 @@ class AiUsageApi:
 class AiUsageRequestHandler(BaseHTTPRequestHandler):
     api = AiUsageApi()
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+    def log_message(self, format: str, *args: Any) -> None:
         return
 
     def _dispatch(self) -> None:

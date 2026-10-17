@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import sys
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -270,9 +271,9 @@ def test_configure_commands_merge_settings_sections(tmp_path, monkeypatch):
 
 
 def test_status_renders_fresh_stale_and_missing_providers():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
     text = collector.render_status(
         {
             "claude": {

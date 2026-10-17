@@ -7,15 +7,16 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from model import MAX_SNAPSHOT_BYTES, SNAPSHOT_SCHEMA_VERSION, UsageStore, utc_iso  # noqa: E402
+from model import MAX_SNAPSHOT_BYTES, SNAPSHOT_SCHEMA_VERSION, UsageStore, utc_iso
 
-NOW = datetime(2026, 10, 4, 18, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 4, 18, 0, tzinfo=UTC)
 
 
 def snapshot(provider="claude", used=40, reset_hours=2, minutes=300):
@@ -404,7 +405,13 @@ def weekly_snapshot(provider="claude", used=2, reset_hours=24):
 
 
 class SubscriptionRoiTest(unittest.TestCase):
-    FEES = {"claude": 3500, "codex": 700, "gemini": 700, "grok": 1000, "muse": 300}
+    FEES: ClassVar[dict[str, int]] = {
+        "claude": 3500,
+        "codex": 700,
+        "gemini": 700,
+        "grok": 1000,
+        "muse": 300,
+    }
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

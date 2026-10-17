@@ -23,7 +23,7 @@ from service_auth import AuthPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from server import AiUsageApi, AiUsageRequestHandler  # noqa: E402
+from server import AiUsageApi, AiUsageRequestHandler
 
 
 class AiUsageServerTest(unittest.TestCase):
@@ -87,17 +87,17 @@ class AiUsageServerTest(unittest.TestCase):
         )
         api = AiUsageApi(self.path, environment="production", auth_policy=policy)
         now = int(time.time())
-        claims = dict(
-            iss="https://solo.example",
-            aud="ai-usage-api",
-            sub="fixture-owner",
-            tenant_id="owner",
-            scope="ai-usage:read",
-            iat=now,
-            nbf=now,
-            exp=now + 120,
-            jti="fixture-request",
-        )
+        claims = {
+            "iss": "https://solo.example",
+            "aud": "ai-usage-api",
+            "sub": "fixture-owner",
+            "tenant_id": "owner",
+            "scope": "ai-usage:read",
+            "iat": now,
+            "nbf": now,
+            "exp": now + 120,
+            "jti": "fixture-request",
+        }
 
         def headers(changes=None):
             return {
@@ -148,6 +148,7 @@ class AiUsageServerTest(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,  # the test asserts on the exit code itself
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("AI_USAGE_API_AUTH_*", result.stderr)
