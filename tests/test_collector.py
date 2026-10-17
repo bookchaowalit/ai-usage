@@ -174,3 +174,30 @@ def test_configure_commands_merge_settings_sections(tmp_path, monkeypatch):
         run("configure-subscription", "--provider", "grok", "--fee-thb", "-1")
     (tmp_path / "settings.json").write_text("[]")
     assert run("configure-subscription", "--provider", "grok", "--fee-thb", "1") == 1
+
+
+def test_status_renders_fresh_stale_and_missing_providers():
+    from datetime import datetime, timezone
+    now = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+    text = collector.render_status({
+        "claude": {"collected_at": "2026-10-17T11:58:00Z", "plan": None, "windows": [
+            {"remaining_percent": 62, "resets_at": "2026-10-17T14:14:00Z", "window_minutes": 300},
+            {"remaining_percent": 80, "resets_at": "2026-10-17T11:00:00Z", "window_minutes": 10080}]},
+        "codex": None}, now)
+    assert "5-hour   ██████░░░░   62% left · resets in 2h 14m" in text
+    assert "weekly   reset since last check" in text
+    assert "Codex   not connected" in text
+    assert "stale" not in text and "\033[" not in text
+    stale = collector.render_status({"codex": {"collected_at": "2026-10-17T09:00:00Z", "plan": "Plus", "windows": [
+        {"remaining_percent": 35, "resets_at": "2026-10-22T12:00:00Z", "window_minutes": 10080}]}}, now)
+    assert "Codex · Plus (stale, 3h 00m ago)" in stale
+    assert "resets in 5d 0h" in stale
+
+
+def test_status_command_reads_stored_snapshots_offline(tmp_path, monkeypatch, capsys):
+    (tmp_path / "codex.json").write_text(json.dumps({"collected_at": "2000-01-01T00:00:00Z", "windows": [
+        {"remaining_percent": 10, "resets_at": "2999-01-01T00:00:00Z", "window_minutes": 300}]}))
+    monkeypatch.setattr(sys, "argv", ["collector.py", "status", "--offline", "--state-dir", str(tmp_path)])
+    assert collector.main() == 0
+    out = capsys.readouterr().out
+    assert "Claude  not connected" in out and "10% left" in out and "stale" in out

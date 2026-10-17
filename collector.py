@@ -244,11 +244,11 @@ def ingest_claude(directory: Path, *, passthrough: str | None = None) -> None:
         if snapshot["windows"]:
             atomic_json(directory / "claude.json", snapshot)
         if not passthrough:
-            parts = [f"{w['label']}: เหลือ {w['remaining_percent']:g}%" for w in snapshot["windows"]]
-            print("Claude · " + (" · ".join(parts) or "รอโควตาจากเซสชัน"))
+            parts = [f"{window_name(w['window_minutes'])} {w['remaining_percent']:g}% left" for w in snapshot["windows"]]
+            print("Claude · " + (" · ".join(parts) or "waiting for quota"))
     except (ValueError, UnicodeError, OSError, CollectionError):
         if not passthrough:
-            print("Claude · ยังไม่มีข้อมูลโควตา")
+            print("Claude · no quota data yet")
     if passthrough:
         # This exact pre-existing command is supplied by the local installer,
         # never by an HTTP request or provider JSON.
@@ -286,11 +286,90 @@ def install_claude(settings_path: Path, fallback_path: Path | None) -> None:
     atomic_json(settings_path, settings)
 
 
+STALE_SECONDS = 15 * 60
+
+
+def window_name(minutes: Any) -> str:
+    if minutes == 300:
+        return "5-hour"
+    if minutes == 10080:
+        return "weekly"
+    if isinstance(minutes, int) and minutes > 0:
+        return f"{minutes // 1440}-day" if minutes % 1440 == 0 else f"{minutes}-min"
+    return "window"
+
+
+def duration_text(seconds: float) -> str:
+    minutes = max(0, int(seconds // 60))
+    days, rest = divmod(minutes, 1440)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
+def parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else None
+
+
+def render_status(snapshots: dict[str, dict | None], now: datetime, *, color: bool = False) -> str:
+    """Human-readable quota table; reads only the allowlisted snapshot fields."""
+    def paint(text: str, code: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if color else text
+
+    lines = []
+    for provider, title in (("claude", "Claude"), ("codex", "Codex")):
+        snapshot = snapshots.get(provider)
+        windows = snapshot.get("windows") if isinstance(snapshot, dict) else None
+        if not windows:
+            hint = "install-claude" if provider == "claude" else "codex"
+            lines.append(f"{title:<7} {paint('not connected', '2')} (run: collector.py {hint})")
+            continue
+        collected = parse_iso(snapshot.get("collected_at"))
+        age = (now - collected).total_seconds() if collected else None
+        plan = snapshot.get("plan")
+        header = f"{title} · {plan}" if isinstance(plan, str) else title
+        if age is None or age > STALE_SECONDS:
+            header += " " + paint(f"(stale, {duration_text(age) + ' ago' if age is not None else 'unknown age'})", "33")
+        lines.append(header)
+        for item in windows:
+            remaining = number(item.get("remaining_percent"), 100)
+            reset = parse_iso(item.get("resets_at"))
+            if remaining is None:
+                continue
+            if reset is not None and reset <= now:
+                lines.append(f"  {window_name(item.get('window_minutes')):<8} reset since last check")
+                continue
+            filled = round(remaining / 10)
+            tone = "31" if remaining < 15 else "33" if remaining < 40 else "32"
+            bar = paint("█" * filled, tone) + paint("░" * (10 - filled), "2")
+            until = f" · resets in {duration_text((reset - now).total_seconds())}" if reset else ""
+            lines.append(f"  {window_name(item.get('window_minutes')):<8} {bar} {remaining:>4.0f}% left{until}")
+    return "\n".join(lines)
+
+
+def read_snapshot(path: Path) -> dict | None:
+    try:
+        if path.is_symlink() or path.stat().st_size > MAX_BYTES:
+            return None
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("codex", "claude-statusline", "install-claude", "configure-fees",
+    parser.add_argument("command", choices=("status", "codex", "claude-statusline", "install-claude", "configure-fees",
                                                 "configure-subscription", "configure-business"))
     parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--offline", action="store_true", help="status: skip the live Codex read")
     parser.add_argument("--interval", type=int, default=0, help="Codex poll interval, minimum 60 seconds")
     parser.add_argument("--passthrough", help="Preserve a pre-existing Claude statusLine command")
     parser.add_argument("--passthrough-settings", type=Path, help="Read the inherited statusLine command at callback time")
@@ -306,6 +385,15 @@ def main() -> int:
     parser.add_argument("--profit-before-ai-thb", type=float)
     args = parser.parse_args()
     directory = args.state_dir or state_dir()
+    if args.command == "status":
+        if not args.offline and shutil.which("codex"):
+            try:
+                atomic_json(directory / "codex.json", read_codex())
+            except (CollectionError, ValueError, OSError):
+                pass  # Fall back to the last stored snapshot.
+        snapshots = {provider: read_snapshot(directory / f"{provider}.json") for provider in ("claude", "codex")}
+        print(render_status(snapshots, datetime.now(timezone.utc), color=sys.stdout.isatty()))
+        return 0
     if args.command == "configure-fees":
         if number(args.claude_fee) is None or number(args.codex_fee) is None:
             parser.error("both monthly USD fees must be finite nonnegative numbers")
