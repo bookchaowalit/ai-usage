@@ -74,7 +74,7 @@ def parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or len(value) > 40:
         return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))  # noqa: FURB162 - keeps Z-normalisation; removing it changes which inputs are accepted
         return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
     except (ValueError, OverflowError):
         return None

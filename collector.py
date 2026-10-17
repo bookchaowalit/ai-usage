@@ -429,7 +429,7 @@ def parse_iso(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))  # noqa: FURB162 - keeps Z-normalisation; removing it changes which inputs are accepted
     except ValueError:
         return None
     return parsed if parsed.tzinfo else None
