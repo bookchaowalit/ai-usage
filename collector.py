@@ -358,6 +358,7 @@ def ingest_claude(directory: Path, *, passthrough: str | None = None) -> None:
         # This exact pre-existing command is supplied by the local installer,
         # never by an HTTP request or provider JSON.
         try:
+            # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true -- passthrough is the user's existing statusline command written by the local installer, never request or provider data
             subprocess.run(passthrough, shell=True, input=raw, timeout=5, check=False)
         except (OSError, subprocess.TimeoutExpired):
             pass
