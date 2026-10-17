@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlsplit
 
 from service_auth import AuthError, AuthPolicy, check_read_auth, is_loopback, readiness
@@ -27,55 +28,144 @@ class Response:
 
 
 class AiUsageApi:
-    def __init__(self, state_dir: str | Path | None = None, *, environment: str | None = None,
-                 token: str | None = None, auth_policy: AuthPolicy | None = None,
-                 allowed_origins: tuple[str, ...] | None = None) -> None:
+    def __init__(
+        self,
+        state_dir: str | Path | None = None,
+        *,
+        environment: str | None = None,
+        token: str | None = None,
+        auth_policy: AuthPolicy | None = None,
+        allowed_origins: tuple[str, ...] | None = None,
+    ) -> None:
         self.store = UsageStore(state_dir)
-        self.environment = (environment or os.environ.get("AI_USAGE_API_ENV", "development")).strip().lower()
-        self.token = token if token is not None else os.environ.get("AI_USAGE_API_TOKEN", "").strip()
-        self.auth_policy = auth_policy or AuthPolicy.from_env("AI_USAGE_API_", "ai-usage-api", "ai-usage:read")
-        configured_origins = os.environ.get("AI_USAGE_API_CORS_ORIGINS", "http://127.0.0.1:3600,http://localhost:3600")
-        self.allowed_origins = allowed_origins if allowed_origins is not None else tuple(value.strip() for value in configured_origins.split(",") if value.strip())
+        self.environment = (
+            (environment or os.environ.get("AI_USAGE_API_ENV", "development"))
+            .strip()
+            .lower()
+        )
+        self.token = (
+            token
+            if token is not None
+            else os.environ.get("AI_USAGE_API_TOKEN", "").strip()
+        )
+        self.auth_policy = auth_policy or AuthPolicy.from_env(
+            "AI_USAGE_API_", "ai-usage-api", "ai-usage:read"
+        )
+        configured_origins = os.environ.get(
+            "AI_USAGE_API_CORS_ORIGINS", "http://127.0.0.1:3600,http://localhost:3600"
+        )
+        self.allowed_origins = (
+            allowed_origins
+            if allowed_origins is not None
+            else tuple(
+                value.strip()
+                for value in configured_origins.split(",")
+                if value.strip()
+            )
+        )
 
-    def handle(self, method: str, target: str, *, headers: Mapping[str, str] | None = None) -> Response:
-        request_headers = {str(key).lower(): str(value) for key, value in (headers or {}).items()}
+    def handle(
+        self, method: str, target: str, *, headers: Mapping[str, str] | None = None
+    ) -> Response:
+        request_headers = {
+            str(key).lower(): str(value) for key, value in (headers or {}).items()
+        }
         try:
             path = urlsplit(target).path.rstrip("/") or "/"
             if method == "OPTIONS":
                 return Response(204, {})
             if method == "GET" and path == "/health":
-                return Response(200, {"status": "ok", "service": SERVICE_NAME, "schema_version": SCHEMA_VERSION,
-                                      "timestamp": utc_iso(datetime.now(timezone.utc))})
+                return Response(
+                    200,
+                    {
+                        "status": "ok",
+                        "service": SERVICE_NAME,
+                        "schema_version": SCHEMA_VERSION,
+                        "timestamp": utc_iso(datetime.now(UTC)),
+                    },
+                )
             if method == "GET" and path == "/ready":
-                status, payload = readiness(self.auth_policy, self.environment, self.store)
+                status, payload = readiness(
+                    self.auth_policy, self.environment, self.store
+                )
                 return Response(status, payload)
             if path == "/api/v1/ai-usage":
-                check_read_auth(self.auth_policy, request_headers, environment=self.environment, token=self.token)
+                check_read_auth(
+                    self.auth_policy,
+                    request_headers,
+                    environment=self.environment,
+                    token=self.token,
+                )
                 if method != "GET":
-                    return Response(405, {"error": {"code": "method_not_allowed", "message": "ข้อมูลการใช้ AI อ่านได้อย่างเดียว"}})
+                    return Response(
+                        405,
+                        {
+                            "error": {
+                                "code": "method_not_allowed",
+                                "message": "ข้อมูลการใช้ AI อ่านได้อย่างเดียว",
+                            }
+                        },
+                    )
                 return Response(200, self.store.snapshot())
-            return Response(404, {"error": {"code": "not_found", "message": "ไม่พบเส้นทางที่ร้องขอ"}})
+            return Response(
+                404, {"error": {"code": "not_found", "message": "ไม่พบเส้นทางที่ร้องขอ"}}
+            )
         except AuthError as exc:
-            return Response(exc.status, {"error": {"code": exc.code, "message": exc.message}})
-        except Exception:
-            return Response(500, {"error": {"code": "internal_error", "message": "ไม่สามารถอ่านข้อมูลการใช้ AI ได้"}})
+            return Response(
+                exc.status, {"error": {"code": exc.code, "message": exc.message}}
+            )
+        except Exception:  # noqa: BLE001 - never leak exception text; answer a generic 500
+            return Response(
+                500,
+                {
+                    "error": {
+                        "code": "internal_error",
+                        "message": "ไม่สามารถอ่านข้อมูลการใช้ AI ได้",
+                    }
+                },
+            )
 
 
 class AiUsageRequestHandler(BaseHTTPRequestHandler):
     api = AiUsageApi()
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+    def log_message(self, format: str, *args: Any) -> None:
         return
 
     def _dispatch(self) -> None:
         origin = self.headers.get("Origin")
         if origin and origin not in self.api.allowed_origins:
-            self._write(Response(403, {"error": {"code": "origin_not_allowed", "message": "ไม่อนุญาต origin นี้"}}), None)
+            self._write(
+                Response(
+                    403,
+                    {
+                        "error": {
+                            "code": "origin_not_allowed",
+                            "message": "ไม่อนุญาต origin นี้",
+                        }
+                    },
+                ),
+                None,
+            )
             return
-        self._write(self.api.handle(self.command, self.path, headers=dict(self.headers.items())), origin)
+        self._write(
+            self.api.handle(
+                self.command, self.path, headers=dict(self.headers.items())
+            ),
+            origin,
+        )
 
     def _write(self, response: Response, origin: str | None) -> None:
-        encoded = b"" if response.status == 204 else json.dumps(response.payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        encoded = (
+            b""
+            if response.status == 204
+            else json.dumps(
+                response.payload,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
         self.send_response(response.status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -101,9 +191,21 @@ class AiUsageRequestHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Solo Empire AI usage API")
-    parser.add_argument("--host", default=os.environ.get("AI_USAGE_API_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("AI_USAGE_API_PORT", os.environ.get("PORT", "3520"))))
-    parser.add_argument("--state-dir", default=None, help="sanitized snapshots; defaults to AI_USAGE_STATE_DIR")
+    parser.add_argument(
+        "--host", default=os.environ.get("AI_USAGE_API_HOST", "127.0.0.1")
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(
+            os.environ.get("AI_USAGE_API_PORT", os.environ.get("PORT", "3520"))
+        ),
+    )
+    parser.add_argument(
+        "--state-dir",
+        default=None,
+        help="sanitized snapshots; defaults to AI_USAGE_STATE_DIR",
+    )
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
@@ -111,7 +213,9 @@ def main() -> None:
     if not is_loopback(args.host):
         AiUsageRequestHandler.api.environment = "production"
         if not AiUsageRequestHandler.api.auth_policy.ready:
-            parser.error("a non-loopback --host requires valid AI_USAGE_API_AUTH_* configuration")
+            parser.error(
+                "a non-loopback --host requires valid AI_USAGE_API_AUTH_* configuration"
+            )
     server = ThreadingHTTPServer((args.host, args.port), AiUsageRequestHandler)
     print(f"{SERVICE_NAME} running on http://{args.host}:{args.port}", flush=True)
     try:

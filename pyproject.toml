@@ -11,3 +11,7 @@ dependencies = ["solo-empire-service-auth>=0.1.0,<0.2"]
 
 [tool.setuptools]
 py-modules = ["server", "model", "collector"]
+
+[tool.ruff]
+# Vendored copy of bookchaowalit/platform-auth-sdk: "do not edit here" (vendor/service-auth/README.md).
+extend-exclude = ["vendor"]

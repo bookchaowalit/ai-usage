@@ -5,6 +5,7 @@ account/rateLimits/read through its own authenticated app-server. Only a small
 allowlist is persisted. No prompts, replies, account identities or raw errors
 are stored. Collection never starts an AI turn or redeems a reset credit.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +33,16 @@ class CollectionError(Exception):
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def state_dir() -> Path:
     configured = os.environ.get("AI_USAGE_STATE_DIR")
-    return Path(configured).expanduser() if configured else Path.home() / ".local/state/solo-empire/ai-usage"
+    return (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".local/state/solo-empire/ai-usage"
+    )
 
 
 def number(value: Any, maximum: float = 1e15) -> float | None:
@@ -49,17 +54,30 @@ def number(value: Any, maximum: float = 1e15) -> float | None:
         return None
 
 
-def window(identifier: str, label: str, value: Any, duration: int | None, *, codex: bool = False) -> dict | None:
+def window(
+    identifier: str,
+    label: str,
+    value: Any,
+    duration: int | None,
+    *,
+    codex: bool = False,
+) -> dict | None:
     if not isinstance(value, dict):
         return None
     percent = number(value.get("usedPercent" if codex else "used_percentage"), 100)
     reset = number(value.get("resetsAt" if codex else "resets_at"), 253402300799)
     if percent is None or reset is None:
         return None
-    return {"id": identifier, "label": label, "used_percent": percent,
-            "remaining_percent": round(100 - percent, 4),
-            "resets_at": datetime.fromtimestamp(reset, timezone.utc).isoformat().replace("+00:00", "Z"),
-            "window_minutes": duration}
+    return {
+        "id": identifier,
+        "label": label,
+        "used_percent": percent,
+        "remaining_percent": round(100 - percent, 4),
+        "resets_at": datetime.fromtimestamp(reset, UTC)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "window_minutes": duration,
+    }
 
 
 def claude_snapshot(payload: Any) -> dict:
@@ -67,38 +85,86 @@ def claude_snapshot(payload: Any) -> dict:
         raise CollectionError("invalid_claude_statusline")
     rates = payload.get("rate_limits")
     rates = rates if isinstance(rates, dict) else {}
-    windows = [w for identifier, label, duration in
-               (("five_hour", "รอบ 5 ชั่วโมง", 300), ("seven_day", "รอบ 7 วัน", 10080))
-               if (w := window(identifier, label, rates.get(identifier), duration)) is not None]
+    windows = [
+        w
+        for identifier, label, duration in (
+            ("five_hour", "รอบ 5 ชั่วโมง", 300),
+            ("seven_day", "รอบ 7 วัน", 10080),
+        )
+        if (w := window(identifier, label, rates.get(identifier), duration)) is not None
+    ]
     cost = payload.get("cost")
     cost = cost if isinstance(cost, dict) else {}
     # Context-window token totals are NOT lifetime/session token totals.
-    return {"schema_version": SCHEMA, "provider": "claude", "source": "claude_statusline",
-            "collected_at": now_iso(), "plan": None, "windows": windows,
-            "session": {"estimated_cost_usd": number(cost.get("total_cost_usd")),
-                        "input_tokens": None, "output_tokens": None}}
+    return {
+        "schema_version": SCHEMA,
+        "provider": "claude",
+        "source": "claude_statusline",
+        "collected_at": now_iso(),
+        "plan": None,
+        "windows": windows,
+        "session": {
+            "estimated_cost_usd": number(cost.get("total_cost_usd")),
+            "input_tokens": None,
+            "output_tokens": None,
+        },
+    }
 
 
 def codex_snapshot(payload: Any) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("rateLimits"), dict):
         raise CollectionError("invalid_codex_limits")
     rates = payload["rateLimits"]
-    plans = {"free": "Free", "go": "Go", "plus": "Plus", "pro": "Pro", "prolite": "Pro Lite",
-             "promax": "Pro Max", "team": "Team", "business": "Business", "enterprise": "Enterprise",
-             "edu": "Edu", "edu_plus": "Edu", "edu_pro": "Edu", "ent26": "Enterprise",
-             "self_serve_business_prolite": "Business", "self_serve_business_usage_based": "Business",
-             "enterprise_cbp_automation": "Enterprise", "enterprise_cbp_usage_based": "Enterprise"}
+    plans = {
+        "free": "Free",
+        "go": "Go",
+        "plus": "Plus",
+        "pro": "Pro",
+        "prolite": "Pro Lite",
+        "promax": "Pro Max",
+        "team": "Team",
+        "business": "Business",
+        "enterprise": "Enterprise",
+        "edu": "Edu",
+        "edu_plus": "Edu",
+        "edu_pro": "Edu",
+        "ent26": "Enterprise",
+        "self_serve_business_prolite": "Business",
+        "self_serve_business_usage_based": "Business",
+        "enterprise_cbp_automation": "Enterprise",
+        "enterprise_cbp_usage_based": "Enterprise",
+    }
     windows = []
     for identifier, label in (("primary", "รอบระยะสั้น"), ("secondary", "รอบระยะยาว")):
         raw = rates.get(identifier)
-        duration = number(raw.get("windowDurationMins"), 525600) if isinstance(raw, dict) else None
-        duration = int(duration) if duration is not None and duration > 0 and duration.is_integer() else None
+        duration = (
+            number(raw.get("windowDurationMins"), 525600)
+            if isinstance(raw, dict)
+            else None
+        )
+        duration = (
+            int(duration)
+            if duration is not None and duration > 0 and duration.is_integer()
+            else None
+        )
         normalized = window(identifier, label, raw, duration, codex=True)
         if normalized:
             windows.append(normalized)
-    return {"schema_version": SCHEMA, "provider": "codex", "source": "codex_app_server",
-            "collected_at": now_iso(), "plan": plans.get(rates.get("planType")) if isinstance(rates.get("planType"), str) else None, "windows": windows,
-            "session": {"estimated_cost_usd": None, "input_tokens": None, "output_tokens": None}}
+    return {
+        "schema_version": SCHEMA,
+        "provider": "codex",
+        "source": "codex_app_server",
+        "collected_at": now_iso(),
+        "plan": plans.get(rates.get("planType"))
+        if isinstance(rates.get("planType"), str)
+        else None,
+        "windows": windows,
+        "session": {
+            "estimated_cost_usd": None,
+            "input_tokens": None,
+            "output_tokens": None,
+        },
+    }
 
 
 def atomic_json(target: Path, payload: dict) -> None:
@@ -175,7 +241,9 @@ def rpc_result(process: subprocess.Popen, request_id: int, deadline: float) -> d
                 except (ValueError, UnicodeError):
                     continue
                 if isinstance(response, dict) and response.get("id") == request_id:
-                    if "error" in response or not isinstance(response.get("result"), dict):
+                    if "error" in response or not isinstance(
+                        response.get("result"), dict
+                    ):
                         raise CollectionError("codex_usage_unavailable")
                     return response["result"]
     raise CollectionError("codex_timeout")
@@ -188,21 +256,51 @@ def read_codex(binary: str | None = None, timeout: float = 20) -> dict:
     deadline = time.monotonic() + timeout
     # No thread/start, turn/start, credential-file reads, or model invocations.
     try:
-        process = subprocess.Popen([executable, "-c", "analytics.enabled=false", "-c", "mcp_servers={}",
-                                    "app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL, start_new_session=True)
+        process = subprocess.Popen(
+            [
+                executable,
+                "-c",
+                "analytics.enabled=false",
+                "-c",
+                "mcp_servers={}",
+                "app-server",
+                "--stdio",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     except OSError:
         raise CollectionError("codex_not_installed") from None
     try:
+
         def send(value: dict):
             process.stdin.write((json.dumps(value) + "\n").encode())
             process.stdin.flush()
-        send({"id": 1, "method": "initialize", "params": {
-            "clientInfo": {"name": "solo_ai_usage", "version": "0.1.0"},
-            "capabilities": {"experimentalApi": False, "explicitGatewayOauth": True}}})
+
+        send(
+            {
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "solo_ai_usage", "version": "0.1.0"},
+                    "capabilities": {
+                        "experimentalApi": False,
+                        "explicitGatewayOauth": True,
+                    },
+                },
+            }
+        )
         rpc_result(process, 1, deadline)
         send({"method": "initialized"})
-        send({"id": 2, "method": "account/rateLimits/read", "params": {"excludeResetCreditDetails": True}})
+        send(
+            {
+                "id": 2,
+                "method": "account/rateLimits/read",
+                "params": {"excludeResetCreditDetails": True},
+            }
+        )
         return codex_snapshot(rpc_result(process, 2, deadline))
     except (BrokenPipeError, OSError):
         raise CollectionError("codex_connection_closed") from None
@@ -227,7 +325,11 @@ def statusline_command(settings: Path | None) -> str | None:
             return None
         value = json.loads(settings.read_text()).get("statusLine", {})
         command = value.get("command") if isinstance(value, dict) else None
-        if isinstance(command, str) and len(command) <= 8192 and "collector.py" not in command:
+        if (
+            isinstance(command, str)
+            and len(command) <= 8192
+            and "collector.py" not in command
+        ):
             return command
     except (OSError, ValueError, AttributeError):
         pass
@@ -244,7 +346,10 @@ def ingest_claude(directory: Path, *, passthrough: str | None = None) -> None:
         if snapshot["windows"]:
             atomic_json(directory / "claude.json", snapshot)
         if not passthrough:
-            parts = [f"{window_name(w['window_minutes'])} {w['remaining_percent']:g}% left" for w in snapshot["windows"]]
+            parts = [
+                f"{window_name(w['window_minutes'])} {w['remaining_percent']:g}% left"
+                for w in snapshot["windows"]
+            ]
             print("Claude · " + (" · ".join(parts) or "waiting for quota"))
     except (ValueError, UnicodeError, OSError, CollectionError):
         if not passthrough:
@@ -253,6 +358,7 @@ def ingest_claude(directory: Path, *, passthrough: str | None = None) -> None:
         # This exact pre-existing command is supplied by the local installer,
         # never by an HTTP request or provider JSON.
         try:
+            # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true -- passthrough is the user's existing statusline command written by the local installer, never request or provider data
             subprocess.run(passthrough, shell=True, input=raw, timeout=5, check=False)
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -260,7 +366,10 @@ def ingest_claude(directory: Path, *, passthrough: str | None = None) -> None:
 
 def install_claude(settings_path: Path, fallback_path: Path | None) -> None:
     """Add the callback only, preserving every unrelated project setting."""
-    if settings_path.is_symlink() or settings_path.parent.resolve() != settings_path.parent.absolute():
+    if (
+        settings_path.is_symlink()
+        or settings_path.parent.resolve() != settings_path.parent.absolute()
+    ):
         raise CollectionError("unsafe_settings_path")
     try:
         original = settings_path.read_bytes() if settings_path.exists() else None
@@ -272,7 +381,15 @@ def install_claude(settings_path: Path, fallback_path: Path | None) -> None:
     except (ValueError, OSError):
         raise CollectionError("invalid_settings") from None
     script = Path(__file__).resolve()
-    command = shlex.join([sys.executable, str(script), "claude-statusline", "--state-dir", str(state_dir())])
+    command = shlex.join(
+        [
+            sys.executable,
+            str(script),
+            "claude-statusline",
+            "--state-dir",
+            str(state_dir()),
+        ]
+    )
     if fallback_path:
         command += " " + shlex.join(["--passthrough-settings", str(fallback_path)])
     current = settings.get("statusLine")
@@ -312,14 +429,17 @@ def parse_iso(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     return parsed if parsed.tzinfo else None
 
 
-def render_status(snapshots: dict[str, dict | None], now: datetime, *, color: bool = False) -> str:
+def render_status(
+    snapshots: dict[str, dict | None], now: datetime, *, color: bool = False
+) -> str:
     """Human-readable quota table; reads only the allowlisted snapshot fields."""
+
     def paint(text: str, code: str) -> str:
         return f"\033[{code}m{text}\033[0m" if color else text
 
@@ -329,14 +449,19 @@ def render_status(snapshots: dict[str, dict | None], now: datetime, *, color: bo
         windows = snapshot.get("windows") if isinstance(snapshot, dict) else None
         if not windows:
             hint = "install-claude" if provider == "claude" else "codex"
-            lines.append(f"{title:<7} {paint('not connected', '2')} (run: collector.py {hint})")
+            lines.append(
+                f"{title:<7} {paint('not connected', '2')} (run: collector.py {hint})"
+            )
             continue
         collected = parse_iso(snapshot.get("collected_at"))
         age = (now - collected).total_seconds() if collected else None
         plan = snapshot.get("plan")
         header = f"{title} · {plan}" if isinstance(plan, str) else title
         if age is None or age > STALE_SECONDS:
-            header += " " + paint(f"(stale, {duration_text(age) + ' ago' if age is not None else 'unknown age'})", "33")
+            header += " " + paint(
+                f"(stale, {duration_text(age) + ' ago' if age is not None else 'unknown age'})",
+                "33",
+            )
         lines.append(header)
         for item in windows:
             remaining = number(item.get("remaining_percent"), 100)
@@ -344,13 +469,21 @@ def render_status(snapshots: dict[str, dict | None], now: datetime, *, color: bo
             if remaining is None:
                 continue
             if reset is not None and reset <= now:
-                lines.append(f"  {window_name(item.get('window_minutes')):<8} reset since last check")
+                lines.append(
+                    f"  {window_name(item.get('window_minutes')):<8} reset since last check"
+                )
                 continue
             filled = round(remaining / 10)
             tone = "31" if remaining < 15 else "33" if remaining < 40 else "32"
             bar = paint("█" * filled, tone) + paint("░" * (10 - filled), "2")
-            until = f" · resets in {duration_text((reset - now).total_seconds())}" if reset else ""
-            lines.append(f"  {window_name(item.get('window_minutes')):<8} {bar} {remaining:>4.0f}% left{until}")
+            until = (
+                f" · resets in {duration_text((reset - now).total_seconds())}"
+                if reset
+                else ""
+            )
+            lines.append(
+                f"  {window_name(item.get('window_minutes')):<8} {bar} {remaining:>4.0f}% left{until}"
+            )
     return "\n".join(lines)
 
 
@@ -366,20 +499,51 @@ def read_snapshot(path: Path) -> dict | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("status", "codex", "claude-statusline", "install-claude", "configure-fees",
-                                                "configure-subscription", "configure-business"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "status",
+            "codex",
+            "claude-statusline",
+            "install-claude",
+            "configure-fees",
+            "configure-subscription",
+            "configure-business",
+        ),
+    )
     parser.add_argument("--state-dir", type=Path)
-    parser.add_argument("--offline", action="store_true", help="status: skip the live Codex read")
-    parser.add_argument("--interval", type=int, default=0, help="Codex poll interval, minimum 60 seconds")
-    parser.add_argument("--passthrough", help="Preserve a pre-existing Claude statusLine command")
-    parser.add_argument("--passthrough-settings", type=Path, help="Read the inherited statusLine command at callback time")
-    parser.add_argument("--settings-path", type=Path, help="Claude project-local settings path")
+    parser.add_argument(
+        "--offline", action="store_true", help="status: skip the live Codex read"
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=0,
+        help="Codex poll interval, minimum 60 seconds",
+    )
+    parser.add_argument(
+        "--passthrough", help="Preserve a pre-existing Claude statusLine command"
+    )
+    parser.add_argument(
+        "--passthrough-settings",
+        type=Path,
+        help="Read the inherited statusLine command at callback time",
+    )
+    parser.add_argument(
+        "--settings-path", type=Path, help="Claude project-local settings path"
+    )
     parser.add_argument("--claude-fee", type=float)
     parser.add_argument("--codex-fee", type=float)
-    parser.add_argument("--provider", choices=SUBSCRIPTION_IDS, help="configure-subscription target")
+    parser.add_argument(
+        "--provider", choices=SUBSCRIPTION_IDS, help="configure-subscription target"
+    )
     parser.add_argument("--fee-thb", type=float, help="Monthly subscription fee in THB")
-    parser.add_argument("--plan", help="Plan label, letters/digits/space/+.- up to 40 characters")
-    parser.add_argument("--active-days", type=int, help="Days used in the last 30 (self-reported)")
+    parser.add_argument(
+        "--plan", help="Plan label, letters/digits/space/+.- up to 40 characters"
+    )
+    parser.add_argument(
+        "--active-days", type=int, help="Days used in the last 30 (self-reported)"
+    )
     parser.add_argument("--month", help="Business month YYYY-MM")
     parser.add_argument("--revenue-thb", type=float)
     parser.add_argument("--profit-before-ai-thb", type=float)
@@ -391,15 +555,22 @@ def main() -> int:
                 atomic_json(directory / "codex.json", read_codex())
             except (CollectionError, ValueError, OSError):
                 pass  # Fall back to the last stored snapshot.
-        snapshots = {provider: read_snapshot(directory / f"{provider}.json") for provider in ("claude", "codex")}
-        print(render_status(snapshots, datetime.now(timezone.utc), color=sys.stdout.isatty()))
+        snapshots = {
+            provider: read_snapshot(directory / f"{provider}.json")
+            for provider in ("claude", "codex")
+        }
+        print(render_status(snapshots, datetime.now(UTC), color=sys.stdout.isatty()))
         return 0
     if args.command == "configure-fees":
         if number(args.claude_fee) is None or number(args.codex_fee) is None:
             parser.error("both monthly USD fees must be finite nonnegative numbers")
         try:
-            update_settings(directory / "settings.json", "monthly_fees_usd", None,
-                            {"claude": args.claude_fee, "codex": args.codex_fee})
+            update_settings(
+                directory / "settings.json",
+                "monthly_fees_usd",
+                None,
+                {"claude": args.claude_fee, "codex": args.codex_fee},
+            )
         except CollectionError as error:
             print(str(error), file=sys.stderr)
             return 1
@@ -422,7 +593,9 @@ def main() -> int:
         if not values:
             parser.error("set at least one of --fee-thb, --plan, --active-days")
         try:
-            update_settings(directory / "settings.json", "subscriptions", args.provider, values)
+            update_settings(
+                directory / "settings.json", "subscriptions", args.provider, values
+            )
         except CollectionError as error:
             print(str(error), file=sys.stderr)
             return 1
@@ -435,13 +608,18 @@ def main() -> int:
                 parser.error("--revenue-thb must be a finite nonnegative number")
             values["monthly_revenue_thb"] = args.revenue_thb
         if args.profit_before_ai_thb is not None:
-            if not math.isfinite(args.profit_before_ai_thb) or abs(args.profit_before_ai_thb) > 1e12:
+            if (
+                not math.isfinite(args.profit_before_ai_thb)
+                or abs(args.profit_before_ai_thb) > 1e12
+            ):
                 parser.error("--profit-before-ai-thb must be a finite number")
             values["monthly_profit_before_ai_thb"] = args.profit_before_ai_thb
         if args.month is not None:
             values["month"] = args.month
         if not values:
-            parser.error("set at least one of --revenue-thb, --profit-before-ai-thb, --month")
+            parser.error(
+                "set at least one of --revenue-thb, --profit-before-ai-thb, --month"
+            )
         try:
             update_settings(directory / "settings.json", "business", None, values)
         except CollectionError as error:
@@ -460,7 +638,11 @@ def main() -> int:
         print("claude_statusline_configured")
         return 0
     if args.command == "claude-statusline":
-        ingest_claude(directory, passthrough=args.passthrough or statusline_command(args.passthrough_settings))
+        ingest_claude(
+            directory,
+            passthrough=args.passthrough
+            or statusline_command(args.passthrough_settings),
+        )
         return 0
     if args.interval and args.interval < 60:
         parser.error("poll interval must be at least 60 seconds")
@@ -468,11 +650,22 @@ def main() -> int:
         try:
             snapshot = read_codex()
             atomic_json(directory / "codex.json", snapshot)
-            print(json.dumps({"provider": "codex", "status": "collected", "windows": len(snapshot["windows"])}), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "provider": "codex",
+                        "status": "collected",
+                        "windows": len(snapshot["windows"]),
+                    }
+                ),
+                flush=True,
+            )
             success = True
         except (CollectionError, ValueError, OSError):
             # Retain last success; its original timestamp naturally becomes stale.
-            print(json.dumps({"provider": "codex", "status": "unavailable"}), flush=True)
+            print(
+                json.dumps({"provider": "codex", "status": "unavailable"}), flush=True
+            )
             success = False
         if not args.interval:
             return 0 if success else 1
